@@ -4,6 +4,8 @@
 <h1>VGG‑T³</h1>
 </div>
 
+
+<a href="https://colab.research.google.com/github/1kaiser/vgg-ttt/blob/main/notebooks/reconstruct_jax_out.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/>
 [![arXiv](https://img.shields.io/badge/arXiv-2602.23361-b31b1b.svg)](https://arxiv.org/abs/2602.23361) 
 [![Project Page](https://img.shields.io/badge/Project_Page-green)](https://research.nvidia.com/labs/dvl/projects/vgg-ttt/) 
 [![Hugging Face Model](https://img.shields.io/badge/🤗%20Hugging%20Face-Model-blue)](https://huggingface.co/nvidia/vgg-ttt)
