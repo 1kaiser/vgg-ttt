@@ -120,6 +120,22 @@ def load_weights_and_cast(path: str, dtype=None):
     """Load weights from msgpack or safetensors, casting to dtype on-the-fly to save RAM."""
     import gc
     import jax.numpy as jnp
+    from pathlib import Path
+
+    local_path = Path(path)
+    if not local_path.exists():
+        import re
+        hf_match = re.search(r"([^/]+/[^/]+)/([^/]+\.(?:safetensors|msgpack))", path)
+        if hf_match:
+            repo_id = hf_match.group(1)
+            filename = hf_match.group(2)
+            print(f"Weights file not found locally. Downloading {filename} from Hugging Face dataset {repo_id}...")
+            from huggingface_hub import hf_hub_download
+            try:
+                path = hf_hub_download(repo_id=repo_id, filename=filename, repo_type="dataset")
+                print(f"Downloaded weights to cache: {path}")
+            except Exception as e:
+                print(f"Error downloading from Hugging Face: {e}")
 
     if path.endswith(".safetensors"):
         from safetensors.numpy import load_file
@@ -182,8 +198,8 @@ def main():
     parser.add_argument(
         "--weights",
         type=str,
-        default="vggttt_jax/vggttt.msgpack",
-        help="Path to .msgpack weight file",
+        default="1kaiser/vgg_ttt/vggttt_f16.safetensors",
+        help="Path to weight file or Hugging Face dataset path (e.g. 1kaiser/vgg_ttt/vggttt_f16.safetensors)",
     )
     parser.add_argument(
         "--images",
@@ -227,7 +243,7 @@ def main():
 
     # If low-ram and weights is default, switch to float16 safetensors weights
     if args.low_ram and args.weights == "vggttt_jax/vggttt.msgpack":
-        args.weights = "vggttt_jax/vggttt_f16.safetensors"
+        args.weights = "1kaiser/vgg_ttt/vggttt_f16.safetensors"
 
     # ---- 0. Configure JAX backend ----
     os.environ["JAX_PLATFORMS"] = args.device

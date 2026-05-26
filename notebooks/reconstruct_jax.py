@@ -18,7 +18,7 @@
 
 # %% tags=["parameters"]
 image_paths = []
-weights_path = "vggttt_jax/vggttt_f16.safetensors"
+weights_path = "1kaiser/vgg_ttt/vggttt_f16.safetensors"
 precision = "bfloat16"
 low_ram = True
 device = "cpu"
