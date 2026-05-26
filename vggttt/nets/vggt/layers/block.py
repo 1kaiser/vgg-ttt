@@ -92,7 +92,7 @@ class Block(nn.Module):
         x = x + self.drop_path1(
             self.ls1(self.attn(self.norm1(x), pos=pos, chunk_size=chunk_size, offload_to_cpu=offload_to_cpu, **kwargs))
         )
-        x = x + apply_chunked(mlp_branch, x, dim=1, chunk_size=chunk_size, offload_to_cpu=offload_to_cpu).cuda(
-            non_blocking=True
+        x = x + apply_chunked(mlp_branch, x, dim=1, chunk_size=chunk_size, offload_to_cpu=offload_to_cpu).to(
+            x.device, non_blocking=True
         )
         return x

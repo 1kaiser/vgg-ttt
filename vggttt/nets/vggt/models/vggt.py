@@ -307,8 +307,16 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
 
 
         images = images[None]  # add batch dimension
-        dtype = dtype or torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
-        with torch.autocast("cuda", dtype=dtype):
+        device = images.device
+        if dtype is None:
+            if device.type == "cuda" and torch.cuda.get_device_capability()[0] >= 8:
+                dtype = torch.bfloat16
+            elif device.type == "cuda":
+                dtype = torch.float16
+            else:
+                dtype = torch.float32
+        autocast_ctx = torch.autocast(device.type, dtype=dtype) if device.type == "cuda" else torch.autocast("cpu", dtype=dtype, enabled=(dtype != torch.float32))
+        with autocast_ctx:
             aggregated_tokens_list, ps_idx, _ = self.aggregator(
                 images,
                 attn_kwargs=attn_kwargs,
@@ -322,8 +330,8 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
             if existing_cam_tokens is not None:
                 cam_tokens = torch.cat([existing_cam_tokens.to(cam_tokens), cam_tokens], dim=1)
 
-        with torch.autocast("cuda", enabled=False):
-            pose_enc = self.camera_head(cam_tokens.clone().cuda(non_blocking=True))[-1]
+        with torch.autocast(device.type, enabled=False):
+            pose_enc = self.camera_head(cam_tokens.clone().to(device, non_blocking=True))[-1]
 
             if existing_cam_tokens is not None:
                 pose_enc = pose_enc[:, existing_cam_tokens.shape[1] :]

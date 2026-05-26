@@ -217,7 +217,7 @@ class DPTHead(nn.Module):
         if self.feature_only:
             return out
 
-        with torch.autocast("cuda", enabled=False, dtype=torch.float32):
+        with torch.autocast(out.device.type, enabled=False, dtype=torch.float32):
             out = self.scratch.output_conv2(out)
             preds, conf = activate_head(out, activation=self.activation, conf_activation=self.conf_activation)
             return preds, conf
@@ -256,7 +256,7 @@ class DPTHead(nn.Module):
 
             # Select frames if processing a chunk
             if frames_start_idx is not None and frames_end_idx is not None:
-                x = x[frames_start_idx:frames_end_idx].cuda(non_blocking=True)
+                x = x[frames_start_idx:frames_end_idx].to(tokens.device, non_blocking=True)
 
             x = checkpoint(
                 partial(self.apply_proj_resize, dpt_idx=dpt_idx, patch_h=patch_h, patch_w=patch_w, W=W, H=H),

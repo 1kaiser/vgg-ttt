@@ -382,7 +382,7 @@ class FastWeightAttention(nn.Module):
 
         if self.state_tracking:
             self.state = state
-        return output.cuda(non_blocking=True)
+        return output.to(output.device, non_blocking=True)
 
     def _proj(self, x: torch.Tensor):
         x = self.proj(x)

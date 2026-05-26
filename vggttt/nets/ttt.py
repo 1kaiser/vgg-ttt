@@ -132,7 +132,7 @@ def apply_chunked(
 
     out = []
     for chunk in x.split(chunk_size, dim):
-        chunk_out = func(chunk.cuda(non_blocking=True), *args, **kwargs)
+        chunk_out = func(chunk.to(x.device, non_blocking=True), *args, **kwargs)
         out.append(chunk_out if not offload_to_cpu else move_to_device(chunk_out, torch.device("cpu")))
 
     if not out:
@@ -213,10 +213,11 @@ def fast_weight_swish_glu_weight_norm_mini_batch_apply(
         if op.compute_grad:
             # NOTE: All of the below code (magically??) works when start = end and grads will be 0 so no additional care
             # needs to be taken for the sequence parallel setting
-            ki, vi = k[:, start:end, :].cuda(non_blocking=True), v[:, start:end, :].cuda(non_blocking=True)  # bf16
-            lr0i = lr0[:, start:end, :].cuda(non_blocking=True)  # [b, l, d/1] fp32
-            lr1i = lr1[:, start:end, :].cuda(non_blocking=True)  # [b, l, d/1] fp32
-            lr2i = lr2[:, start:end, :].cuda(non_blocking=True)  # [b, l, d/1] fp32
+            _device = k.device
+            ki, vi = k[:, start:end, :].to(_device, non_blocking=True), v[:, start:end, :].to(_device, non_blocking=True)  # bf16
+            lr0i = lr0[:, start:end, :].to(_device, non_blocking=True)  # [b, l, d/1] fp32
+            lr1i = lr1[:, start:end, :].to(_device, non_blocking=True)  # [b, l, d/1] fp32
+            lr2i = lr2[:, start:end, :].to(_device, non_blocking=True)  # [b, l, d/1] fp32
 
             if auto_grad:
                 # Compute gradients using torch.autograd.grad
@@ -295,7 +296,7 @@ def fast_weight_swish_glu_weight_norm_mini_batch_apply(
             if use_best_weights:
                 w0, w1, w2 = best_weights["w0"], best_weights["w1"], best_weights["w2"]
 
-            qi = q[:, start:end, :].cuda(non_blocking=True)
+            qi = q[:, start:end, :].to(q.device, non_blocking=True)
             oi = fast_weight_swish_glu_fwd(qi, w0, w1, w2)
             output.append(oi if not offload_to_cpu else move_to_device(oi, torch.device("cpu")))
 
