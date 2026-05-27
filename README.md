@@ -67,6 +67,13 @@ JAX_PLATFORMS=cpu conda run -n num_python papermill notebooks/reconstruct_jax.ip
 - data/nerf_real_360/pinecone/images_8/IMG_7239.png"
 ```
 
+### 📐 3D Point Cloud Export (PLY / GLB)
+The JAX notebooks automatically export the reconstructed 3D point clouds using **Trimesh** to the `assets/` directory:
+- 🌲 **Pinecone**: [jax_pinecone_reconstruct.ply](assets/jax_pinecone_reconstruct.ply) & [jax_pinecone_reconstruct.glb](assets/jax_pinecone_reconstruct.glb)
+- 🏺 **Vasedeck**: [jax_vasedeck_reconstruct.ply](assets/jax_vasedeck_reconstruct.ply) & [jax_vasedeck_reconstruct.glb](assets/jax_vasedeck_reconstruct.glb)
+
+These standard files can be opened in Blender, MeshLab, or standard 3D viewers.
+
 ### 🖥️ CPU Notebooks (PyTorch – `num_gpu` env)
 ```bash
 # 2-image CPU reconstruction
