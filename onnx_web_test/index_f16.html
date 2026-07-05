@@ -8,8 +8,9 @@
   correct. Pass ?ep=wasm to try the wasm execution provider instead (loads,
   but crashes mid-inference with an uninformative error).
 
-  Requires vggttt_pt_f16.onnx + vggttt_pt_f16.onnx.data (2.55GB, gitignored)
-  in this same directory -- produced by:
+  Fetches vggttt_pt_f16.onnx + vggttt_pt_f16.onnx.data (2.55GB total) from
+  https://huggingface.co/1kaiser/vgg_ttt -- works standalone from a single
+  downloaded/saved copy of this file, no companion files needed. Produced by:
     python vggttt_onnx/convert_to_onnx.py --fp16 --dynamo \
       --output vggttt_jax/vggttt_pt_f16.onnx
 -->
@@ -75,13 +76,15 @@ async function main() {
     }
     log('Input tensor built: ' + inputData.length + ' fp16 values');
 
+    const MODEL_URL = 'https://huggingface.co/1kaiser/vgg_ttt/resolve/main/vggttt_pt_f16.onnx';
+    const MODEL_DATA_URL = 'https://huggingface.co/1kaiser/vgg_ttt/resolve/main/vggttt_pt_f16.onnx.data';
     const ep = new URLSearchParams(location.search).get('ep') || 'webgpu';
     log('Creating InferenceSession (executionProviders: ' + ep + ')...');
     const t0 = performance.now();
-    const session = await ort.InferenceSession.create('vggttt_pt_f16.onnx', {
+    const session = await ort.InferenceSession.create(MODEL_URL, {
       executionProviders: [ep],
       externalData: [
-        { path: 'vggttt_pt_f16.onnx.data', data: 'vggttt_pt_f16.onnx.data' }
+        { path: 'vggttt_pt_f16.onnx.data', data: MODEL_DATA_URL }
       ],
     });
     log('Session created in ' + ((performance.now() - t0) / 1000).toFixed(1) + 's');

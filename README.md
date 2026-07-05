@@ -200,6 +200,8 @@ So: two execution providers, two different failure modes, both *after* successfu
 
 **Bottom line**: onnxruntime-web *can* load meaningfully larger models than LiteRT.js before hitting a hard wall (WASM32's real 4GB, not a ~2GB library-specific ceiling) — genuinely useful to know. But for *this* model's size and architecture, actually running correct inference in-browser still isn't achievable today, for reasons specific to each stack (LiteRT.js: XNNPACK doesn't support the only small-enough quantization mode; ONNX Runtime Web: float16 WebGPU compute silently returns zeros, float16 wasm crashes). Both are genuine current limitations of these browser ML runtimes for a model this size and complexity — not something fixable from the demo/conversion side.
 
+The fp16 ONNX model (`vggttt_pt_f16.onnx` + `vggttt_pt_f16.onnx.data`, 2.55GB) is hosted at [huggingface.co/1kaiser/vgg_ttt](https://huggingface.co/1kaiser/vgg_ttt) alongside the TFLite variants, so `onnx_web_test/index_f16.html` reproduces the above standalone (no local conversion needed) — confirmed against the hosted copy too, same all-zero-output result, ~8 minutes to download+load over a real network vs. ~15s from local disk.
+
 ## 📂 Repository Layout
 ```
 ├─ data/                # Datasets (e.g., nerf_360)
