@@ -1,4 +1,6 @@
 *.msgpack
 *.safetensors
 *.npz
+*.tflite
+vggttt_savedmodel/
 __pycache__/

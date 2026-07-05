@@ -114,6 +114,40 @@ for py in notebooks/*.py; do jupytext --to ipynb "$py"; done
 ```
 Run the notebooks in either the **GPU** (`num_gpu`) or **CPU** (`num_python`) Conda environments as required.
 
+## 🌐 TFLite / Browser (WebGPU) Inference
+
+`vggttt_jax/convert_to_tflite.py` converts the JAX/Flax model to TFLite via
+`jax2tf` → TF SavedModel → `TFLiteConverter`, fixed at a (2, 392, 518)
+input shape (the exact shape the repo's own pinecone example resolves to).
+`notebooks/reconstruct_dual_backend.ipynb` runs the same reconstruction via
+both the JAX (`.safetensors`) and TFLite backends side by side and compares
+them — verified working both locally (papermill) and on Colab.
+
+### Three TFLite variants, and why only one is usable in a browser
+
+| Variant | Size | Runs via `tf.lite.Interpreter` (Python)? | Runs via LiteRT.js (browser)? |
+|---|---|---|---|
+| float32 | 4.6 GB | ✅ exact match to JAX | ❌ exceeds LiteRT.js's documented 2GB WASM memory ceiling |
+| float16 | 2.3 GB | ✅ tiny error (cos sim 1.0) | ❌ still exceeds the 2GB ceiling |
+| dynamic-range (weight-only int8) | 1.3 GB | ✅ real but modest error (~6% relative error in focal length; cosine similarity 0.997–0.9999 across all outputs) | ❌ **XNNPACK — which both the `wasm` accelerator and the CPU-fallback portion of `webgpu` depend on — does not support dynamic-range quantization at all** (a documented XNNPACK limitation, not a bug): `ERROR: failed to create XNNPACK runtime` |
+| int8 (calibrated, full-integer) | — | ❌ conversion itself fails | — |
+
+The int8 (calibrated) attempt fails at conversion time with `'stablehlo.scatter' op is not any of a builtin TFLite op, a flex TensorFlow op or a custom TensorFlow op` — the MLIR quantizer can't rewrite a `scatter` op used somewhere in the model, unrelated to bit-width. int4 was not attempted for the same reason: it would route through the identical MLIR quantization pass and hit the same wall.
+
+**Net result: there is no quantization mode that is simultaneously small enough for LiteRT.js's browser memory ceiling *and* compatible with XNNPACK.** `webgpu_demo/index.html` is built and does correctly download/compile the dynamic-range model (proving the *size* problem is solved), but inference itself currently fails in-browser due to the XNNPACK incompatibility above. This is a genuine, verified constraint of the current LiteRT.js/XNNPACK stack for a model this size and architecture — not something fixable from the demo side. `reconstruct_dual_backend.ipynb`'s TFLite backend runs fine, since the Python `tf.lite.Interpreter` doesn't have this restriction.
+
+### Weights are hosted as HF Hub **models**, not datasets
+
+`vggttt_f16.safetensors`, `vggttt_f16.tflite`, and `vggttt_dynrange.tflite`
+live at [huggingface.co/1kaiser/vgg_ttt](https://huggingface.co/1kaiser/vgg_ttt)
+(model repo). This was migrated from an earlier dataset-type repo of the
+same name (HF doesn't support converting a repo's type in place — this
+meant downloading everything and re-uploading to a new model-type repo,
+then deleting the old one). The same migration was done for the separate,
+larger `vggt_omega_1b_512` checkpoint family (17.3GB across 2675 files,
+multiple precision/format variants) at
+[huggingface.co/1kaiser/vggt-omega-jax](https://huggingface.co/1kaiser/vggt-omega-jax).
+
 ## 📂 Repository Layout
 ```
 ├─ data/                # Datasets (e.g., nerf_360)

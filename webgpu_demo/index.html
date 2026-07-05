@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>VGG-T³ WebGPU Inference Demo</title>
+<script type="importmap">
+{"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
+</script>
+<script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: #ffffff; overflow: hidden; }
+  body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; color: #111; }
+  #viewer { position: fixed; inset: 0; width: 100%; height: 100%; }
+  #overlay {
+    position: fixed; top: 24px; left: 24px; max-width: 340px;
+    font-size: 13px; line-height: 1.5;
+  }
+  #overlay h1 { font-size: 20px; margin: 0 0 4px 0; font-weight: 600; }
+  #overlay p { color: #555; margin: 6px 0; }
+  #overlay a { color: #06c; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  button {
+    padding: 9px 16px; cursor: pointer; border: none; border-radius: 8px;
+    background: #111; color: #fff; font-weight: 600; font-size: 13px; margin-top: 8px;
+  }
+  button:disabled { cursor: not-allowed; opacity: 0.4; }
+  #status {
+    margin-top: 10px; font-family: ui-monospace, monospace; white-space: pre-wrap;
+    font-size: 11px; color: #666;
+  }
+  #thumbs { display: flex; gap: 6px; margin-top: 8px; }
+  #thumbs img { width: 80px; border-radius: 6px; border: 1px solid #ddd; }
+</style>
+</head>
+<body>
+  <model-viewer id="viewer" camera-controls auto-rotate shadow-intensity="0"></model-viewer>
+
+  <div id="overlay">
+    <h1>VGG-T³ &rarr; WebGPU</h1>
+    <p>
+      Multi-view feed-forward 3D reconstruction with linear
+      test-time-training attention, running in the browser via
+      <a href="https://ai.google.dev/edge/litert/web" target="_blank">LiteRT.js</a>
+      (float16, falls back to <code>wasm</code> if WebGPU can't initialize).
+      Converted from the JAX/Flax port via <code>jax2tf</code> &rarr; TFLite.
+      Fixed 2-image example (bundled) &mdash; model was exported at a fixed
+      (2, 392, 518) input shape.
+    </p>
+    <div id="thumbs">
+      <img src="example_pinecone_0.png" />
+      <img src="example_pinecone_1.png" />
+    </div>
+    <button id="runButton" disabled>Run Inference</button>
+    <div id="status">Loading model (1.3 GB, dynamic-range int8)...</div>
+  </div>
+
+<script type="module">
+import { loadLiteRt, loadAndCompile } from 'https://cdn.jsdelivr.net/npm/@litertjs/core@2.4.0/+esm';
+import { runWithTfjsTensors } from 'https://cdn.jsdelivr.net/npm/@litertjs/tfjs-interop@2.5.0/+esm';
+import * as tf from 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/+esm';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { GLTFExporter } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/exporters/GLTFExporter.js';
+
+const H = 392, W = 518, S = 2;
+const CONF_THRESHOLD = 1.2;
+
+const statusEl = document.getElementById('status');
+const runButton = document.getElementById('runButton');
+const viewerEl = document.getElementById('viewer');
+
+function setStatus(msg) {
+  statusEl.textContent = msg;
+  console.log('[vggt]', msg);
+}
+
+// Hosted on the HF Hub model repo (public, CORS: access-control-allow-origin: *
+// on the CDN redirect target -- verified fetchable from any origin).
+//
+// This is the dynamic-range (weight-only int8) quantized model, NOT the
+// more accurate float16 one (vggttt_f16.tflite, 2.3GB) -- LiteRT.js's own
+// README documents a hard 2GB WASM-runtime-memory ceiling for browser
+// loading, and float16 (2.3GB) exceeds it: both a blob: URL and passing
+// the raw https:// URL straight to loadAndCompile() failed identically
+// (net::ERR_BLOB_OUT_OF_MEMORY / "Failed to fetch") regardless of how the
+// bytes were delivered, confirming it's an internal LiteRT/WASM ceiling,
+// not a network or delivery-mechanism issue. Dynamic-range quantization
+// (1.3GB) is the smallest variant that both (a) fits under that ceiling
+// and (b) actually converts -- full-integer (calibrated) int8 quantization
+// hit a *different*, unrelated wall first: a 'stablehlo.scatter' op the
+// MLIR quantizer can't rewrite at all. Trade-off: real accuracy loss vs.
+// float16 (~6% relative error in predicted focal length; cosine similarity
+// still 0.997-0.9999 across all outputs, so overall shape/geometry holds).
+const MODEL_URL = 'https://huggingface.co/1kaiser/vgg_ttt/resolve/main/vggttt_dynrange.tflite';
+
+let model = null;
+let activeAccelerator = null;
+let currentGlbBlobUrl = null;
+
+async function init() {
+  setStatus('Loading LiteRT.js WASM runtime...');
+  await loadLiteRt('https://cdn.jsdelivr.net/npm/@litertjs/core@2.4.0/wasm/', { jspi: true });
+
+  setStatus('Downloading + compiling vggttt_dynrange.tflite (1.3 GB) from HF Hub...');
+  const forceAccelerator = new URLSearchParams(location.search).get('accel');
+  if (forceAccelerator === 'wasm') {
+    setStatus('Compiling (accelerator: wasm, forced via ?accel=wasm)...');
+    model = await loadAndCompile(MODEL_URL, { accelerator: 'wasm' });
+    activeAccelerator = 'wasm';
+  } else {
+    try {
+      setStatus('Compiling (accelerator: webgpu)...');
+      model = await loadAndCompile(MODEL_URL, { accelerator: 'webgpu' });
+      activeAccelerator = 'webgpu';
+    } catch (err) {
+      console.warn('[vggt] webgpu accelerator failed, falling back to wasm:', err);
+      setStatus('WebGPU unavailable, compiling with wasm accelerator...');
+      model = await loadAndCompile(MODEL_URL, { accelerator: 'wasm' });
+      activeAccelerator = 'wasm';
+    }
+  }
+
+  setStatus(`Model ready (accelerator: ${activeAccelerator}). Click Run Inference.`);
+  runButton.disabled = false;
+}
+
+function loadImagePixels(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, W, H);
+      const data = ctx.getImageData(0, 0, W, H).data; // RGBA Uint8ClampedArray
+      resolve({ data, width: W, height: H });
+    };
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+async function runInference() {
+  if (!model) return;
+  runButton.disabled = true;
+  try {
+    setStatus('Loading bundled example images...');
+    const img0 = await loadImagePixels('example_pinecone_0.png');
+    const img1 = await loadImagePixels('example_pinecone_1.png');
+
+    // Build (1, S, H, W, 3) float32 in [0,1] -- images are already exactly
+    // (392, 518), the fixed shape the TFLite model was exported at, so no
+    // resize/crop is needed here (avoids replicating the Python repo's
+    // aspect-preserving crop/pad preprocessing in JS).
+    const inputData = new Float32Array(1 * S * H * W * 3);
+    for (let s = 0; s < S; s++) {
+      const rgba = s === 0 ? img0.data : img1.data;
+      for (let px = 0; px < H * W; px++) {
+        const base = (s * H * W + px) * 3;
+        inputData[base + 0] = rgba[px * 4 + 0] / 255;
+        inputData[base + 1] = rgba[px * 4 + 1] / 255;
+        inputData[base + 2] = rgba[px * 4 + 2] / 255;
+      }
+    }
+    const inputTensor = tf.tensor(inputData, [1, S, H, W, 3], 'float32');
+
+    setStatus(`Running inference (accelerator: ${activeAccelerator})... this can take 1-2+ minutes.`);
+    const t0 = performance.now();
+    const outputs = await runWithTfjsTensors(model, [inputTensor]);
+    const elapsedMs = performance.now() - t0;
+
+    const outByShape = {};
+    for (const o of outputs) outByShape[o.shape.join(',')] = o;
+    const pts3d = outByShape[[1, S, H, W, 3].join(',')];
+    const conf = outByShape[[1, S, H, W].join(',')];
+
+    setStatus(`Inference done in ${(elapsedMs / 1000).toFixed(1)}s. Building point cloud...`);
+
+    const pts3dArr = await pts3d.array();
+    const confArr = await conf.array();
+
+    inputTensor.dispose();
+    outputs.forEach((o) => o.dispose());
+
+    await buildPointCloudAndRender(pts3dArr[0], confArr[0], [img0, img1]);
+    setStatus(`Inference done in ${(elapsedMs / 1000).toFixed(1)}s (accelerator: ${activeAccelerator}). Point cloud rendered ->`);
+  } catch (err) {
+    console.error(err);
+    setStatus('Error: ' + err.message + '\n\nTry reloading the page (falls back to wasm at compile time on a fresh load).');
+  } finally {
+    runButton.disabled = false;
+  }
+}
+
+async function buildPointCloudAndRender(pts3dViews, confViews, imgs) {
+  // pts3dViews: [S][H][W][3] -- already in a shared WORLD frame (confirmed
+  // empirically: both views' point clouds occupy near-identical spatial
+  // ranges/centers, matching the model source's own comment
+  // "Reconstructed 3D world coords") -- so views are merged directly, no
+  // per-camera-pose transform needed.
+  const positions = [];
+  const colors = [];
+  for (let s = 0; s < S; s++) {
+    const rgba = imgs[s].data;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (confViews[s][y][x] < CONF_THRESHOLD) continue;
+        const [px, py, pz] = pts3dViews[s][y][x];
+        if (!isFinite(px) || !isFinite(py) || !isFinite(pz)) continue;
+        positions.push(px, -py, pz); // flip Y for viewer convention
+        const idx = (y * W + x) * 4;
+        colors.push(rgba[idx] / 255, rgba[idx + 1] / 255, rgba[idx + 2] / 255);
+      }
+    }
+  }
+  setStatus(`Building point cloud (${(positions.length / 3).toLocaleString()} points)...`);
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3));
+  const material = new THREE.PointsMaterial({ size: 0.01, vertexColors: true });
+  const pointCloud = new THREE.Points(geometry, material);
+
+  const exporter = new GLTFExporter();
+  const glbArrayBuffer = await new Promise((resolve, reject) => {
+    exporter.parse(pointCloud, resolve, reject, { binary: true });
+  });
+  if (currentGlbBlobUrl) URL.revokeObjectURL(currentGlbBlobUrl);
+  const glbBlob = new Blob([glbArrayBuffer], { type: 'model/gltf-binary' });
+  currentGlbBlobUrl = URL.createObjectURL(glbBlob);
+  viewerEl.src = currentGlbBlobUrl;
+
+  geometry.dispose();
+  material.dispose();
+}
+
+runButton.addEventListener('click', runInference);
+
+init().catch((err) => {
+  console.error(err);
+  setStatus('Failed to load model: ' + err.message);
+});
+</script>
+</body>
+</html>

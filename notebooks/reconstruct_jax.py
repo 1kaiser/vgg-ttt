@@ -32,7 +32,7 @@ if 'google.colab' in sys.modules:
     
     os.makedirs("vggttt_jax", exist_ok=True)
     if not os.path.exists("vggttt_jax/vggttt_f16.safetensors"):
-        os.system("wget -nc https://huggingface.co/datasets/1kaiser/vgg_ttt/resolve/main/vggttt_f16.safetensors -O vggttt_jax/vggttt_f16.safetensors")
+        os.system("wget -nc https://huggingface.co/1kaiser/vgg_ttt/resolve/main/vggttt_f16.safetensors -O vggttt_jax/vggttt_f16.safetensors")
         
     os.makedirs("data", exist_ok=True)
     if not os.path.exists("data/nerf_real_360"):
