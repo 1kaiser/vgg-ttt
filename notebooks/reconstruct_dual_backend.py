@@ -59,7 +59,7 @@ if 'google.colab' in sys.modules:
         os.system("unzip -o data/nerf_real_360.zip -d data/nerf_real_360")
         os.remove("data/nerf_real_360.zip")
 
-    os.system("pip install -q tensorflow")
+    os.system("pip install -q tensorflow trimesh")
 else:
     print("Running locally. Skipping environment setup.")
     sys.path.insert(0, os.getcwd())
