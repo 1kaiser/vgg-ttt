@@ -160,8 +160,12 @@ multiple precision/format variants) at
 ```
 ├─ data/                # Datasets (e.g., nerf_360)
 ├─ notebooks/           # Jupyter notebooks + .py scripts (Jupytext)
+│   └─ reconstruct_dual_backend.ipynb  # JAX vs TFLite, side by side
 ├─ scripts/             # Utility scripts (weight conversion, etc.)
 ├─ vggttt_jax/          # JAX model implementation & inference runner
+│   ├─ convert_to_tflite*.py  # JAX -> TFLite (float32/float16/dynamic-range/int8)
+│   └─ verify_tflite.py       # numerical check: TFLite vs JAX
+├─ webgpu_demo/         # In-browser inference demo (LiteRT.js) -- see limitation above
 ├─ vggttt/              # Original PyTorch implementation
 ├─ tests/               # Test suite & debugging helpers
 ├─ README.md            # ✨ This file
@@ -202,6 +206,8 @@ See `vggttt/evaluation/README.md` for reproducing paper results. The interactive
 ```bash
 python vggttt/demo.py
 ```
+
+For a browser-based (no local Python) demo, see [`webgpu_demo/`](webgpu_demo/) — note the "🌐 TFLite / Browser (WebGPU) Inference" section above for its current known limitation.
 
 ## 🙏 Acknowledgements
 We thank the open‑source community:
