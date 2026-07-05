@@ -30,6 +30,22 @@
   }
   #thumbs { display: flex; gap: 6px; margin-top: 8px; }
   #thumbs img { width: 80px; border-radius: 6px; border: 1px solid #ddd; }
+  #progressWrap {
+    display: none; margin-top: 8px; height: 6px; border-radius: 3px;
+    background: #eee; overflow: hidden;
+  }
+  #progressWrap.active { display: block; }
+  #progressBar {
+    height: 100%; width: 0%; background: #111; border-radius: 3px;
+    transition: width 0.15s ease-out;
+  }
+  #progressBar.indeterminate {
+    width: 30% !important; animation: indeterminate 1.1s ease-in-out infinite;
+  }
+  @keyframes indeterminate {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(333%); }
+  }
 </style>
 </head>
 <body>
@@ -52,6 +68,7 @@
     </div>
     <button id="runButton" disabled>Run Inference</button>
     <div id="status">Loading model (1.3 GB, dynamic-range int8)...</div>
+    <div id="progressWrap"><div id="progressBar"></div></div>
   </div>
 
 <script type="module">
@@ -104,31 +121,105 @@ let model = null;
 let activeAccelerator = null;
 let currentGlbBlobUrl = null;
 
+const progressWrap = document.getElementById('progressWrap');
+const progressBar = document.getElementById('progressBar');
+
+function showDeterminateProgress(fraction) {
+  progressWrap.classList.add('active');
+  progressBar.classList.remove('indeterminate');
+  progressBar.style.width = `${Math.max(0, Math.min(1, fraction)) * 100}%`;
+}
+function showIndeterminateProgress() {
+  progressWrap.classList.add('active');
+  progressBar.classList.add('indeterminate');
+}
+function hideProgress() {
+  progressWrap.classList.remove('active');
+  progressBar.classList.remove('indeterminate');
+  progressBar.style.width = '0%';
+}
+
+// Fetches the model ourselves (rather than handing a URL to loadAndCompile,
+// which does its own internal fetch with no progress visibility) so we can
+// track real download progress via the response body's reader + the
+// content-length header. loadAndCompile() accepts a raw Uint8Array directly
+// (per @litertjs/core's type defs), so the downloaded bytes are handed off
+// with no intermediate Blob/blob: URL step -- that also sidesteps the
+// net::ERR_BLOB_OUT_OF_MEMORY failure mode hit earlier in this project when
+// a blob: URL was built for a (larger, 2.3GB) model variant.
+async function fetchModelWithProgress(url, label) {
+  const response = await fetch(url);
+  if (!response.ok || !response.body) {
+    throw new Error(`Failed to fetch ${url}: HTTP ${response.status}`);
+  }
+  const totalBytes = Number(response.headers.get('content-length')) || 0;
+  const reader = response.body.getReader();
+  const chunks = [];
+  let receivedBytes = 0;
+  let lastUiUpdate = 0; // throttle UI/console updates -- a 1.3GB stream can
+                         // deliver thousands of small reader.read() chunks,
+                         // and updating on every single one spams the
+                         // console and churns the DOM for no visible benefit
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    receivedBytes += value.byteLength;
+    const now = performance.now();
+    if (now - lastUiUpdate < 150 && receivedBytes < totalBytes) continue;
+    lastUiUpdate = now;
+    if (totalBytes > 0) {
+      const mb = (receivedBytes / 1e6).toFixed(0);
+      const totalMb = (totalBytes / 1e6).toFixed(0);
+      setStatus(`${label}: ${mb} / ${totalMb} MB`);
+      showDeterminateProgress(receivedBytes / totalBytes);
+    } else {
+      setStatus(`${label}: ${(receivedBytes / 1e6).toFixed(0)} MB`);
+      showIndeterminateProgress();
+    }
+  }
+
+  const modelBytes = new Uint8Array(receivedBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    modelBytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return modelBytes;
+}
+
 async function init() {
   document.getElementById('thumb0').src = IMG0_DATA_URI;
   document.getElementById('thumb1').src = IMG1_DATA_URI;
   setStatus('Loading LiteRT.js WASM runtime...');
+  showIndeterminateProgress();
   await loadLiteRt('https://cdn.jsdelivr.net/npm/@litertjs/core@2.4.0/wasm/', { jspi: true });
 
-  setStatus('Downloading + compiling vggttt_dynrange.tflite (1.3 GB) from HF Hub...');
+  const modelBytes = await fetchModelWithProgress(MODEL_URL, 'Downloading vggttt_dynrange.tflite');
+
   const forceAccelerator = new URLSearchParams(location.search).get('accel');
   if (forceAccelerator === 'wasm') {
     setStatus('Compiling (accelerator: wasm, forced via ?accel=wasm)...');
-    model = await loadAndCompile(MODEL_URL, { accelerator: 'wasm' });
+    showIndeterminateProgress();
+    model = await loadAndCompile(modelBytes, { accelerator: 'wasm' });
     activeAccelerator = 'wasm';
   } else {
     try {
       setStatus('Compiling (accelerator: webgpu)...');
-      model = await loadAndCompile(MODEL_URL, { accelerator: 'webgpu' });
+      showIndeterminateProgress();
+      model = await loadAndCompile(modelBytes, { accelerator: 'webgpu' });
       activeAccelerator = 'webgpu';
     } catch (err) {
       console.warn('[vggt] webgpu accelerator failed, falling back to wasm:', err);
       setStatus('WebGPU unavailable, compiling with wasm accelerator...');
-      model = await loadAndCompile(MODEL_URL, { accelerator: 'wasm' });
+      showIndeterminateProgress();
+      model = await loadAndCompile(modelBytes, { accelerator: 'wasm' });
       activeAccelerator = 'wasm';
     }
   }
 
+  hideProgress();
   setStatus(`Model ready (accelerator: ${activeAccelerator}). Click Run Inference.`);
   runButton.disabled = false;
 }
@@ -175,9 +266,11 @@ async function runInference() {
     const inputTensor = tf.tensor(inputData, [1, S, H, W, 3], 'float32');
 
     setStatus(`Running inference (accelerator: ${activeAccelerator})... this can take 1-2+ minutes.`);
+    showIndeterminateProgress();
     const t0 = performance.now();
     const outputs = await runWithTfjsTensors(model, [inputTensor]);
     const elapsedMs = performance.now() - t0;
+    hideProgress();
 
     const outByShape = {};
     for (const o of outputs) outByShape[o.shape.join(',')] = o;
@@ -196,6 +289,7 @@ async function runInference() {
     setStatus(`Inference done in ${(elapsedMs / 1000).toFixed(1)}s (accelerator: ${activeAccelerator}). Point cloud rendered ->`);
   } catch (err) {
     console.error(err);
+    hideProgress();
     setStatus('Error: ' + err.message + '\n\nTry reloading the page (falls back to wasm at compile time on a fresh load).');
   } finally {
     runButton.disabled = false;
@@ -248,6 +342,7 @@ runButton.addEventListener('click', runInference);
 
 init().catch((err) => {
   console.error(err);
+  hideProgress();
   setStatus('Failed to load model: ' + err.message);
 });
 </script>
