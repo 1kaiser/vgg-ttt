@@ -2,5 +2,7 @@
 *.safetensors
 *.npz
 *.tflite
+*.onnx
+*.onnx.data
 vggttt_savedmodel/
 __pycache__/

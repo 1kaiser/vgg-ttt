@@ -156,6 +156,50 @@ larger `vggt_omega_1b_512` checkpoint family (17.3GB across 2675 files,
 multiple precision/format variants) at
 [huggingface.co/1kaiser/vggt-omega-jax](https://huggingface.co/1kaiser/vggt-omega-jax).
 
+## 🧪 A second attempt: ONNX Runtime Web
+
+[transformers.js](https://github.com/huggingface/transformers.js) (Xenova/Hugging Face) does browser WebGPU inference on a completely different stack — **ONNX Runtime Web**, not TFLite/LiteRT.js — so it seemed worth checking whether that stack sidesteps the XNNPACK/memory-ceiling wall above. Short answer: it gets further (loads a bigger model, runs *faster*), but hits its own, different wall for this specific model. Full account below, including two real, reproducible tooling bugs found and fixed along the way.
+
+### PyTorch → ONNX (not JAX → ONNX)
+
+There's no direct JAX-to-ONNX path, so `vggttt_onnx/convert_to_onnx.py` exports from the repo's *original PyTorch* checkpoint (`nvidia/vgg-ttt`) instead, via `torch.onnx.export(..., dynamo=True)`. A `VGGTONNXWrapper` module replicates `VGGT.infer()`'s aggregator → camera_head → depth_head → point_head sequence directly (bypassing both `VGGT.forward()`, which returns a nested/heterogeneous dict, and `infer()` as-is, whose default `use_global_pred=False` path calls `unproject_depth_map_to_point_map` — an explicit `.cpu().numpy()` detour that isn't traceable). Two real bugs came up:
+
+- **The legacy TorchScript exporter can't handle antialiased bicubic interpolation at all** (`aten::_upsample_bicubic2d_aa`, used for position-embedding resize) — fails identically at every opset up to 23 (the max). The newer `dynamo=True` exporter (torch.export + decomposition, PyTorch's new default direction) handles it fine.
+- **A dtype-mismatch bug surfaced only once the graph loaded**: `heads/utils.py::make_sincos_pos_embed` builds its frequency table in `torch.double` while positions stay `float32`, relying on PyTorch's implicit type promotion inside `torch.einsum` (silently upcasts in eager mode). The dynamo exporter doesn't insert the equivalent `Cast`, producing an ONNX `Einsum` node with two different input dtypes — rejected at load time. Making the cast explicit fixed *that*, but then onnxruntime's CPU EP turned out to have no kernel for double-precision `Cos`/`Sin` at all ("Could not find an implementation for Cos(7)") — so the real fix was dropping the double-precision detour entirely and doing the whole sin/cos table in float32 (these are bounded values; the extra precision was never load-bearing). Both patches are applied via monkeypatching `make_sincos_pos_embed` from the conversion script, not by editing the vendored PyTorch source.
+
+### Numerical verification: excellent
+
+`vggttt_onnx/verify_onnx.py` compares onnxruntime (CPUExecutionProvider) against the same wrapper run eagerly in PyTorch, same weights, same images:
+
+| output | max abs diff | cos sim |
+|---|---|---|
+| pose | 0.000012 | 1.000000 |
+| intrinsics | 0.042450 | 1.000000 |
+| pts3d | 0.019719 | 1.000000 |
+| conf | 0.004107 | 1.000000 |
+| depth | 0.003293 | 1.000000 |
+| depth_conf | 0.004687 | 1.000000 |
+
+For scale: the *worst* of these (intrinsics, 0.0425) is about 460&times; smaller than TFLite dynamic-range quantization's error on the same value (19.65). onnxruntime-CPU (7.6s) even slightly outran PyTorch-eager-CPU (8.9s) for this input. The float32 ONNX export is, numerically, a clean, faithful port.
+
+### Browser test: gets further, then hits a different wall
+
+The float32 ONNX model is 5.1GB — tried loading it via `onnxruntime-web` + `executionProviders: ['webgpu']` anyway, to see what would actually happen. It failed immediately at session creation:
+
+```
+RangeError: WebAssembly.Memory(): Property 'initial': value 77871 is above the upper bound 65536
+```
+
+65536 pages &times; 64KB/page = exactly **4GB** — this is **WebAssembly32's hard linear-memory address-space limit**, a fundamental spec constraint that applies to *any* wasm32-based ML runtime, not a conservative choice specific to LiteRT.js. So the same fundamental problem (model too big for browser memory) shows up here too, just via a different, more literal ceiling.
+
+Converting to float16 to get under that ceiling turned out to need its own detour: **both `onnxconverter_common.float16.convert_float_to_float16()` and `onnxruntime.transformers.OnnxModel.convert_float_to_float16()` silently produced an empty (0-node) graph** for this 5.1GB external-data model — no exception raised, just a corrupt result. (Most likely cause: an internal full-model clone/serialize step in both converters hitting protobuf's classic 2GB single-message limit, since the external-data *file* format exists specifically to get around that same limit — the post-hoc converters apparently don't preserve that.) The fix that actually worked: export directly from a `model.half()`'d PyTorch model instead of post-hoc converting an already-exported float32 graph — sidesteps those converters entirely. Result: a 2.55GB fp16 ONNX model.
+
+That one **does** load: `InferenceSession.create()` with `executionProviders: ['webgpu']` succeeds in ~15s. Inference itself completes in ~7.6s — genuinely fast, much faster than TFLite's WASM fallback ever managed. But the actual output values are wrong: **every float16-typed output (pose, pts3d, conf, depth, depth_conf) comes back entirely zero**; only the one output that happens to stay float32 (`intrinsics`, computed via an un-cast `torch.zeros(...)` in `pose_encoding_to_extri_intri`) contains real values. Switching to `executionProviders: ['wasm']` for the same model loads fine (~18s) but then **crashes mid-inference** with an uninformative `ERROR: undefined`.
+
+So: two execution providers, two different failure modes, both *after* successfully loading the model — `webgpu` silently computes garbage (all zeros) for float16 tensors specifically, `wasm` crashes outright. Also worth noting along the way: onnxruntime-web's `float16` tensor type wants a *native* `Float16Array` in this version (1.20.1) — despite `onnxruntime-common`'s own published type definitions listing `float16: Uint16Array` (i.e. manually-packed half-precision bits) — a real mismatch between the docs/types and the actual runtime check, caught by trial and error.
+
+**Bottom line**: onnxruntime-web *can* load meaningfully larger models than LiteRT.js before hitting a hard wall (WASM32's real 4GB, not a ~2GB library-specific ceiling) — genuinely useful to know. But for *this* model's size and architecture, actually running correct inference in-browser still isn't achievable today, for reasons specific to each stack (LiteRT.js: XNNPACK doesn't support the only small-enough quantization mode; ONNX Runtime Web: float16 WebGPU compute silently returns zeros, float16 wasm crashes). Both are genuine current limitations of these browser ML runtimes for a model this size and complexity — not something fixable from the demo/conversion side.
+
 ## 📂 Repository Layout
 ```
 ├─ data/                # Datasets (e.g., nerf_360)
@@ -166,6 +210,7 @@ multiple precision/format variants) at
 │   ├─ convert_to_tflite*.py  # JAX -> TFLite (float32/float16/dynamic-range/int8)
 │   └─ verify_tflite.py       # numerical check: TFLite vs JAX
 ├─ webgpu_demo/         # In-browser inference demo (LiteRT.js) -- see limitation above
+├─ vggttt_onnx/         # PyTorch -> ONNX conversion + verification (see limitation above)
 ├─ vggttt/              # Original PyTorch implementation
 ├─ tests/               # Test suite & debugging helpers
 ├─ README.md            # ✨ This file
