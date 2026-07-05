@@ -121,7 +121,15 @@ Run the notebooks in either the **GPU** (`num_gpu`) or **CPU** (`num_python`) Co
 input shape (the exact shape the repo's own pinecone example resolves to).
 `notebooks/reconstruct_dual_backend.ipynb` runs the same reconstruction via
 both the JAX (`.safetensors`) and TFLite backends side by side and compares
-them — verified working both locally (papermill) and on Colab.
+them — verified working both locally (papermill) and on a real Colab CPU
+session via `colab exec -f`. If testing this notebook via
+[google-colab-cli](https://pypi.org/project/google-colab-cli/) yourself,
+note that `colab exec` defaults to `--timeout 30` (seconds) for waiting on
+a cell's reply — far shorter than this notebook's ~260s JAX cell — which
+causes a harmless client-side `TimeoutError: Timeout waiting for reply`
+even though the underlying kernel execution completes correctly. Pass
+`--timeout 550` (or similar) explicitly to see a single `colab exec` call
+run the whole notebook through to completion.
 
 ### Three TFLite variants, and why only one is usable in a browser
 
